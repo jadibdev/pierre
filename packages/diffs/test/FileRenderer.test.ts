@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import type { ElementContent } from 'hast';
+import type { ElementContent, Element as HASTElement } from 'hast';
 
+import { DEFAULT_THEMES } from '../src/constants';
 import { TextDocument } from '../src/editor/textDocument';
 import { disposeHighlighter } from '../src/highlighter/shared_highlighter';
 import { FileRenderer } from '../src/renderers/FileRenderer';
@@ -15,6 +16,26 @@ type FileRendererCacheProbe = {
     };
   };
 };
+
+// Collects highlighted token spans: spans whose only children are text nodes.
+// Line, gutter and decoration wrappers contain elements, so they are skipped.
+function collectTokenSpans(nodes: ElementContent[]): HASTElement[] {
+  const spans: HASTElement[] = [];
+  const visit = (node: ElementContent): void => {
+    if (node.type !== 'element') return;
+    if (
+      node.tagName === 'span' &&
+      node.children.length > 0 &&
+      node.children.every((child) => child.type === 'text')
+    ) {
+      spans.push(node);
+      return;
+    }
+    node.children.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return spans;
+}
 
 function createEditSessionFile(file: FileContents): FileContents {
   const editSessionFile = { ...file };
@@ -38,6 +59,25 @@ describe('FileRenderer', () => {
     const result = await instance.asyncRender(mockFiles.file1);
     expect(instance.renderCodeAST(result)).toMatchSnapshot();
   });
+
+  // useCSSClasses should move token colors from inline style attributes to
+  // classes so pages with a strict style-src-attr CSP can render them (#1251).
+  // Marked failing until the option is honored; the fix flips it to `test`.
+  test.failing(
+    'useCSSClasses renders token spans without inline styles',
+    async () => {
+      const instance = new FileRenderer({
+        theme: DEFAULT_THEMES,
+        useCSSClasses: true,
+      });
+      const result = await instance.asyncRender(mockFiles.file1);
+      const tokenSpans = collectTokenSpans(instance.renderCodeAST(result));
+      expect(tokenSpans.length).toBeGreaterThan(0);
+      expect(
+        tokenSpans.filter((span) => span.properties.style != null)
+      ).toHaveLength(0);
+    }
+  );
 
   test('truncates cached code rows when document lines are deleted', async () => {
     const instance = new FileRenderer();
